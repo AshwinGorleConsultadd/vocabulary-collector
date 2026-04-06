@@ -11,6 +11,14 @@ const VocabularySchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  englishMeaning: {
+    type: String,
+    required: true,
+  },
+  similarWords: {
+    type: [String],
+    default: [],
+  },
   pronunciationAudio: {
     type: String,
     required: true,

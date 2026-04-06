@@ -25,28 +25,44 @@ const storeVocabulary = async (req, res) => {
     const meaning = translateRes.data.responseData.translatedText;
 
     // Step B: Get pronunciation audio URL
-    const pronunciationAudio = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(word)}&tl=en&client=tw-ob`;
+    const pronunciationAudio = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(word)}&tl=en&client=gtx`;
 
-    // Step C: Generate 3 sentences using Gemini
+    // Step C: Generate English meaning, sentences, and similar words using Gemini
     const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
-    const prompt = `Generate 3 simple sentences using the word "${word}" that are easy to understand for a beginner. Provide only the sentences as a list, no intro or outro.`;
+    const prompt = `You are a helpful language tutor. For the word "${word}", provide:
+    1. A short, simple definition in English (max 15 words).
+    2. Exactly 3 very simple example sentences for a beginner.
+    3. A list of 3-5 similar words (synonyms).
+    
+    Response MUST be strictly in valid JSON format:
+    {
+      "englishMeaning": "...",
+      "sentences": ["...", "...", "..."],
+      "similarWords": ["...", "..."]
+    }`;
     
     const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    
-    // Parse the sentences (assuming simple numbered or bulleted list)
-    const sentences = text
-      .split('\n')
-      .map(s => s.replace(/^\d+\.\s*/, '').replace(/^-\s*/, '').trim())
-      .filter(s => s.length > 0)
-      .slice(0, 3);
+    let aiData;
+    try {
+      const cleanText = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+      aiData = JSON.parse(cleanText);
+    } catch (parseError) {
+      console.error('Error parsing Gemini JSON:', parseError);
+      aiData = {
+        englishMeaning: 'Definition not available.',
+        sentences: [sentence || 'Example not available.'],
+        similarWords: []
+      };
+    }
 
     // Step D: Store in MongoDB
     const newEntry = new Vocabulary({
       word: word.toLowerCase(),
       meaning,
+      englishMeaning: aiData.englishMeaning,
+      similarWords: aiData.similarWords,
       pronunciationAudio,
-      sentences: sentences.length > 0 ? sentences : [sentence], // Fallback to provided sentence if any error
+      sentences: aiData.sentences,
     });
 
     await newEntry.save();
@@ -71,7 +87,22 @@ const getAllVocabulary = async (req, res) => {
   }
 };
 
+const deleteVocabulary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deletedItem = await Vocabulary.findByIdAndDelete(id);
+    if (!deletedItem) {
+      return res.status(404).json({ error: 'Vocabulary not found.' });
+    }
+    res.status(200).json({ message: 'Deleted successfully!' });
+  } catch (error) {
+    console.error('Error in deleteVocabulary:', error);
+    res.status(500).json({ error: 'Failed to delete vocabulary.' });
+  }
+};
+
 module.exports = {
   storeVocabulary,
   getAllVocabulary,
+  deleteVocabulary,
 };
