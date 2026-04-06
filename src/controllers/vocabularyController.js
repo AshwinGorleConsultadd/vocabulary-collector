@@ -1,5 +1,6 @@
-const axios = require('axios');
 const Vocabulary = require('../models/Vocabulary');
+const Revision = require('../models/Revision');
+const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
@@ -55,6 +56,10 @@ const storeVocabulary = async (req, res) => {
       };
     }
 
+    // Ensure user-provided sentence is first and avoid duplicates
+    const aiSentences = (aiData.sentences || []).filter(s => s !== sentence);
+    const finalSentences = sentence ? [sentence, ...aiSentences] : aiSentences;
+
     // Step D: Store in MongoDB
     const newEntry = new Vocabulary({
       word: word.toLowerCase(),
@@ -62,7 +67,7 @@ const storeVocabulary = async (req, res) => {
       englishMeaning: aiData.englishMeaning,
       similarWords: aiData.similarWords,
       pronunciationAudio,
-      sentences: aiData.sentences,
+      sentences: finalSentences,
     });
 
     await newEntry.save();
@@ -79,11 +84,69 @@ const storeVocabulary = async (req, res) => {
 
 const getAllVocabulary = async (req, res) => {
   try {
-    const vocabularies = await Vocabulary.find().sort({ createdAt: -1 });
+    const vocabularies = await Vocabulary.aggregate([
+      {
+        $lookup: {
+          from: 'revisions',
+          localField: '_id',
+          foreignField: 'vocabularyId',
+          as: 'revision'
+        }
+      },
+      {
+        $unwind: {
+          path: '$revision',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      { $sort: { createdAt: -1 } }
+    ]);
     res.status(200).json(vocabularies);
   } catch (error) {
     console.error('Error in getAllVocabulary:', error);
     res.status(500).json({ error: 'Failed to fetch vocabulary.' });
+  }
+};
+
+const markRevised = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const result = await Revision.findOneAndUpdate(
+      { vocabularyId: id },
+      { 
+        $inc: { count: 1 },
+        $set: { lastRevisedAt: new Date() },
+        $addToSet: { history: today } 
+      },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in markRevised:', error);
+    res.status(500).json({ error: 'Failed to mark as revised.' });
+  }
+};
+
+const getRevisionStats = async (req, res) => {
+  try {
+    const stats = await Revision.aggregate([
+      { $unwind: '$history' },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$history' } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    res.status(200).json(stats);
+  } catch (error) {
+    console.error('Error in getRevisionStats:', error);
+    res.status(500).json({ error: 'Failed to fetch revision stats.' });
   }
 };
 
@@ -101,8 +164,33 @@ const deleteVocabulary = async (req, res) => {
   }
 };
 
+const updateVocabulary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { word, meaning, englishMeaning, similarWords, sentences } = req.body;
+
+    const updated = await Vocabulary.findByIdAndUpdate(
+      id,
+      { word, meaning, englishMeaning, similarWords, sentences },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Vocabulary not found.' });
+    }
+
+    res.status(200).json(updated);
+  } catch (error) {
+    console.error('Error in updateVocabulary:', error);
+    res.status(500).json({ error: 'Failed to update vocabulary.' });
+  }
+};
+
 module.exports = {
   storeVocabulary,
   getAllVocabulary,
   deleteVocabulary,
+  markRevised,
+  getRevisionStats,
+  updateVocabulary,
 };
